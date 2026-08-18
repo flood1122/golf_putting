@@ -13,3 +13,9 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+/opencv/build/
+/opencv/.cxx/
+/opencv/native/libs/
+/opencv/native/staticlibs/
+/opencv/native/3rdparty/
