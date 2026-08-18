@@ -1,2 +1,0 @@
-ninja: Entering directory `D:\golf_putting\opencv\.cxx\Debug\395si6m4\arm64-v8a'
-ninja: no work to do.
