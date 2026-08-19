@@ -11,6 +11,7 @@ import com.example.golf_putting.ui.screens.leaderboard.LeaderboardScreen
 import com.example.golf_putting.ui.screens.practice.CameraScreen
 import com.example.golf_putting.ui.screens.practice.ChallengeScreen
 import com.example.golf_putting.ui.screens.settings.SettingsScreen
+import com.example.golf_putting.CameraScreen as RootCameraScreen
 
 @Composable
 fun AppNavGraph(navController: NavHostController) {
@@ -29,13 +30,12 @@ fun AppNavGraph(navController: NavHostController) {
 
         // 메인 탭: 연습
         composable(Screen.TabScreen.Practice.route) {
-            // 추후 자유연습/챌린지 선택화면으로 분리 가능, 현재는 바로 카메라로 진입
             CameraScreen(navController = navController)
         }
 
-        // 메인 탭: 리포트
+        // 메인 탭: 리포트 (테스트를 위해 루트의 CameraScreen으로 변경)
         composable(Screen.TabScreen.Analytics.route) {
-            AnalyticsScreen()
+            RootCameraScreen()
         }
 
         // 메인 탭: 랭킹

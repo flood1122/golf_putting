@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.getValue
@@ -12,7 +13,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.golf_putting.core.vision.CalibrationManager
-import com.example.golf_putting.core.vision.VideoAnalyzer
+import com.example.golf_putting.core.vision.VideoAnalyzer as CoreAnalyzer
+import com.example.golf_putting.VideoAnalyzer as RootAnalyzer
 import com.example.golf_putting.ui.components.MainBottomBar
 import com.example.golf_putting.ui.components.PermissionRequestScreen
 import com.example.golf_putting.ui.navigation.AppNavGraph
@@ -30,8 +32,9 @@ class MainActivity : ComponentActivity() {
             Log.e("GolfPutt", "[OPENCV] OpenCV 초기화 실패!")
         }
 
-        // 비디오 분석 및 캘리브레이션 모듈 초기화
-        VideoAnalyzer.init(applicationContext)
+        // [중요] 두 버전의 비디오 분석 모듈을 모두 초기화
+        CoreAnalyzer.init(applicationContext)
+        RootAnalyzer.init(applicationContext)
         CalibrationManager.init(applicationContext)
 
         setContent {
@@ -39,7 +42,6 @@ class MainActivity : ComponentActivity() {
             val navBackStackEntry by navController.currentBackStackEntryAsState()
             val currentRoute = navBackStackEntry?.destination?.route
 
-            // 로그인 화면 등 특정 화면에서는 바텀바를 숨깁니다.
             val showBottomBar = currentRoute in listOf(
                 Screen.TabScreen.Practice.route,
                 Screen.TabScreen.Analytics.route,
@@ -56,10 +58,11 @@ class MainActivity : ComponentActivity() {
                     },
                     containerColor = Color.Black
                 ) { innerPadding ->
-                    // Navigation Host 연결
-                    AppNavGraph(
-                        navController = navController
-                    )
+                    Box(modifier = Modifier.padding(innerPadding)) {
+                        AppNavGraph(
+                            navController = navController
+                        )
+                    }
                 }
             }
         }
