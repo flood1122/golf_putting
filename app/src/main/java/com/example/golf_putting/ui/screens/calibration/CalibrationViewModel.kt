@@ -1,6 +1,7 @@
 package com.example.golf_putting.ui.screens.calibration
 
 import android.graphics.Bitmap
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -10,107 +11,166 @@ import com.example.golf_putting.core.vision.CalibrationManager
 import com.example.golf_putting.data.model.CalibrationData
 import org.opencv.android.Utils
 import org.opencv.core.*
+import org.opencv.geometry.Geometry
 import org.opencv.imgproc.Imgproc
-import java.util.*
+import java.util.ArrayList
 
 class CalibrationViewModel : ViewModel() {
+    private val TAG = "GolfPutt/CalibViewModel"
+
     var currentStep by mutableIntStateOf(1)
     var calibrationData by mutableStateOf(CalibrationManager.activeCalibrationData)
-    
-    var backgroundScanResult by mutableStateOf<Bitmap?>(null)
-    var ballDetectionResult by mutableStateOf<Bitmap?>(null)
+
+    // 1단계에서 캡처한 이미지 A
+    var imageA by mutableStateOf<Bitmap?>(null)
+
     var statusMessage by mutableStateOf("")
 
-    fun updateBaseSettings(dist: Float, ballY: Float, gateA: Float, gateB: Float) {
-        calibrationData = calibrationData.copy(
-            realDistanceCm = dist,
-            ballYRatio = ballY,
-            gateAYRatio = gateA,
-            gateBYRatio = gateB
-        )
-    }
+    /**
+     * 2단계: 좌우 대칭 폭(bottomWidthRatio)과 원근 비율(perspectiveRatio)을 기반으로 사다리꼴 좌표(warpPoints)를 재계산합니다.
+     * @param bottomWidthRatio 하단 좌우 폭 (0.2 ~ 0.9)
+     * @param perspectiveRatio 상단 폭 / 하단 폭 비율 (0.4 ~ 1.0, 1.0이면 평행)
+     */
+    fun updateSymmetricWarp(bottomWidthRatio: Float, perspectiveRatio: Float) {
+        val safeBottomWidth = bottomWidthRatio.coerceIn(0.2f, 0.9f)
+        val safePerspective = perspectiveRatio.coerceIn(0.4f, 1.0f)
 
-    fun updateWarpPoint(index: Int, x: Float, y: Float) {
-        val newWarp = calibrationData.warpPoints.copyOf()
-        newWarp[index * 2] = x.coerceIn(0f, 1f)
-        newWarp[index * 2 + 1] = y.coerceIn(0f, 1f)
+        val halfBottom = safeBottomWidth / 2f
+        val halfTop = halfBottom * safePerspective
+
+        // Y축 고정 위치 (상단 Y: 0.15, 하단 Y: 0.90)
+        val topY = 0.15f
+        val bottomY = 0.90f
+
+        val newWarp = floatArrayOf(
+            0.5f - halfTop, topY,       // 좌상
+            0.5f + halfTop, topY,       // 우상
+            0.5f - halfBottom, bottomY, // 좌하
+            0.5f + halfBottom, bottomY  // 우하
+        )
+
         calibrationData = calibrationData.copy(warpPoints = newWarp)
     }
 
-    fun scanBackground(frame: Bitmap) {
-        val mat = Mat()
-        Utils.bitmapToMat(frame, mat)
-        val gray = Mat()
-        Imgproc.cvtColor(mat, gray, Imgproc.COLOR_RGB2GRAY)
-        val mask = Mat()
-        Imgproc.threshold(gray, mask, 235.0, 255.0, Imgproc.THRESH_BINARY)
-        val highlight = Mat(mat.size(), mat.type(), Scalar(255.0, 165.0, 0.0, 255.0))
-        val resultMat = Mat()
-        mat.copyTo(resultMat)
-        highlight.copyTo(resultMat, mask)
-        val resultBitmap = Bitmap.createBitmap(frame.width, frame.height, Bitmap.Config.ARGB_8888)
-        Utils.matToBitmap(resultMat, resultBitmap)
-        backgroundScanResult = resultBitmap
-        statusMessage = "빛 반사 영역 스캔 완료"
-        mat.release(); gray.release(); mask.release(); highlight.release(); resultMat.release()
+    /**
+     * 4단계: 실측 거리(cm)만 업데이트합니다.
+     */
+    fun updateRealDistance(distCm: Float) {
+        calibrationData = calibrationData.copy(realDistanceCm = distCm.coerceIn(10f, 200f))
     }
 
-    fun detectAndExtractBallColor(frame: Bitmap) {
-        val mat = Mat()
-        Utils.bitmapToMat(frame, mat)
-        val hsv = Mat()
-        Imgproc.cvtColor(mat, hsv, Imgproc.COLOR_RGB2HSV)
-        val gray = Mat()
-        Imgproc.cvtColor(mat, gray, Imgproc.COLOR_RGB2GRAY)
-        Imgproc.GaussianBlur(gray, gray, Size(9.0, 9.0), 2.0)
-        val circles = Mat()
-        Imgproc.HoughCircles(gray, circles, Imgproc.HOUGH_GRADIENT, 1.0, 
-            gray.rows() / 8.0, 100.0, 30.0, 20, 100)
-            
-        if (circles.cols() > 0) {
-            val circleData = circles.get(0, 0)
-            val center = Point(circleData[0], circleData[1])
-            val radius = circleData[2].toInt()
-            
-            val mask = Mat.zeros(hsv.size(), CvType.CV_8UC1)
-            Imgproc.circle(mask, center, (radius * 0.8).toInt(), Scalar(255.0), -1)
-            val hValues = mutableListOf<Int>(); val sValues = mutableListOf<Int>(); val vValues = mutableListOf<Int>()
-            for (r in 0 until hsv.rows()) {
-                for (c in 0 until hsv.cols()) {
-                    if (mask.get(r, c)[0] > 0) {
-                        val p = hsv.get(r, c)
-                        hValues.add(p[0].toInt()); sValues.add(p[1].toInt()); vValues.add(p[2].toInt())
-                    }
-                }
-            }
-            if (hValues.isNotEmpty()) {
-                hValues.sort(); sValues.sort(); vValues.sort()
-                val minIdx = (hValues.size * 0.05).toInt(); val maxIdx = (hValues.size * 0.95).toInt()
-                
-                // [고도화] HSV 범위와 함께 공의 픽셀 반지름도 저장
-                calibrationData = calibrationData.copy(
-                    ballHsvMin = intArrayOf(hValues[minIdx], sValues[minIdx], vValues[minIdx]),
-                    ballHsvMax = intArrayOf(hValues[maxIdx], sValues[maxIdx], vValues[maxIdx]),
-                    ballPixelRadius = radius.toFloat()
-                )
-                
-                val resultMat = Mat()
-                mat.copyTo(resultMat)
-                Imgproc.circle(resultMat, center, radius, Scalar(57.0, 255.0, 20.0, 255.0), 5)
-                val resultBitmap = Bitmap.createBitmap(frame.width, frame.height, Bitmap.Config.ARGB_8888)
-                Utils.matToBitmap(resultMat, resultBitmap)
-                ballDetectionResult = resultBitmap
-                statusMessage = "공 인식 성공! 반경: ${radius}px"
-                resultMat.release()
-            }
-            mask.release()
-        } else {
-            statusMessage = "공을 찾을 수 없습니다."
+    /**
+     * 3단계: Y축 비율(공, Gate A, Gate B)만 독립적으로 안전하게 업데이트합니다.
+     */
+    fun updateYRatios(ballY: Float, gateA: Float, gateB: Float) {
+        val safeGateB = gateB.coerceIn(0.02f, 0.85f)
+        val safeGateA = gateA.coerceIn(safeGateB + 0.03f, 0.90f)
+        val safeBallY = ballY.coerceIn(safeGateA + 0.03f, 0.98f)
+
+        calibrationData = calibrationData.copy(
+            ballYRatio = safeBallY,
+            gateAYRatio = safeGateA,
+            gateBYRatio = safeGateB
+        )
+    }
+
+    fun updateBaseSettings(dist: Float, ballY: Float, gateA: Float, gateB: Float) {
+        val safeGateB = gateB.coerceIn(0.02f, 0.85f)
+        val safeGateA = gateA.coerceIn(safeGateB + 0.03f, 0.90f)
+        val safeBallY = ballY.coerceIn(safeGateA + 0.03f, 0.98f)
+
+        calibrationData = calibrationData.copy(
+            realDistanceCm = dist,
+            ballYRatio = safeBallY,
+            gateAYRatio = safeGateA,
+            gateBYRatio = safeGateB
+        )
+    }
+
+    /**
+     * [2단계] Image A에서 세로 매트를 자동 인식하여 대칭 가이드 초깃값을 설정합니다.
+     */
+    fun analyzeAndDetectMatShape() {
+        val bitmap = imageA ?: run {
+            setDefaultSymmetricWarp()
+            return
         }
-        mat.release(); hsv.release(); gray.release(); circles.release()
+
+        try {
+            val srcMat = Mat()
+            Utils.bitmapToMat(bitmap, srcMat)
+
+            val gray = Mat()
+            Imgproc.cvtColor(srcMat, gray, Imgproc.COLOR_RGB2GRAY)
+            Imgproc.GaussianBlur(gray, gray, Size(5.0, 5.0), 0.0)
+
+            val edges = Mat()
+            Imgproc.Canny(gray, edges, 50.0, 150.0)
+
+            val contours = ArrayList<MatOfPoint>()
+            val hierarchy = Mat()
+            Imgproc.findContours(edges, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+
+            var maxArea = 0.0
+            var bestQuad: MatOfPoint2f? = null
+
+            val imgWidth = srcMat.cols().toDouble()
+            val imgHeight = srcMat.rows().toDouble()
+            val minMatArea = (imgWidth * imgHeight) * 0.08
+
+            for (contour in contours) {
+                val contour2f = MatOfPoint2f(*contour.toArray())
+                val approx2f = MatOfPoint2f()
+
+                val area = Geometry.contourArea(contour)
+                val peri = Geometry.arcLength(contour2f, true)
+                Geometry.approxPolyDP(contour2f, approx2f, 0.03 * peri, true)
+
+                if (approx2f.total() == 4L && area > minMatArea && area > maxArea) {
+                    maxArea = area
+                    bestQuad = approx2f
+                }
+                contour2f.release()
+            }
+
+            if (bestQuad != null) {
+                val pts = bestQuad.toArray()
+                val sortedByY = pts.sortedBy { it.y }
+                val topPts = sortedByY.take(2).sortedBy { it.x }
+                val bottomPts = sortedByY.takeLast(2).sortedBy { it.x }
+
+                val topWidthPx = Math.abs(topPts[1].x - topPts[0].x)
+                val bottomWidthPx = Math.abs(bottomPts[1].x - bottomPts[0].x)
+
+                val bottomWidthRatio = (bottomWidthPx / imgWidth).toFloat().coerceIn(0.3f, 0.85f)
+                val perspectiveRatio = if (bottomWidthPx > 0) (topWidthPx / bottomWidthPx).toFloat().coerceIn(0.5f, 1.0f) else 0.75f
+
+                updateSymmetricWarp(bottomWidthRatio, perspectiveRatio)
+                statusMessage = "매트 영역이 자동 감지되었습니다."
+                Log.i(TAG, "대칭 매트 자동 검출 성공: 폭 $bottomWidthRatio, 원근 $perspectiveRatio")
+                bestQuad.release()
+            } else {
+                setDefaultSymmetricWarp()
+                statusMessage = "매트 감지 실패 - 대칭 기본 가이드를 적용합니다."
+                Log.i(TAG, "매트 감지 실패 - 기본 대칭 가이드 적용")
+            }
+
+            srcMat.release(); gray.release(); edges.release(); hierarchy.release()
+            contours.forEach { it.release() }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "매트 검출 오류: ${e.message}")
+            setDefaultSymmetricWarp()
+        }
     }
 
-    fun saveAndFinish() {
-        CalibrationManager.saveActiveCalibration(calibrationData)
+    private fun setDefaultSymmetricWarp() {
+        updateSymmetricWarp(bottomWidthRatio = 0.70f, perspectiveRatio = 0.75f)
+    }
+
+    fun saveAndFinishWithPreset(presetName: String) {
+        val finalData = calibrationData.copy(presetName = presetName)
+        CalibrationManager.saveActiveCalibration(finalData)
+        CalibrationManager.savePreset(presetName, finalData)
     }
 }

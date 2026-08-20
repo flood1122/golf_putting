@@ -207,26 +207,26 @@ object VideoAnalyzer {
     }
 
     private fun findBallX(roi: Mat, binaryMask: Mat, hsvMin: Scalar, hsvMax: Scalar, hierarchy: Mat): Double {
-        val hsvRoi = Mat()
-        val colorMask = Mat()
-        Imgproc.cvtColor(roi, hsvRoi, Imgproc.COLOR_GRAY2RGB)
-        Imgproc.cvtColor(hsvRoi, hsvRoi, Imgproc.COLOR_RGB2HSV)
-        Core.inRange(hsvRoi, hsvMin, hsvMax, colorMask)
-        val finalMask = Mat()
-        Core.bitwise_and(binaryMask, colorMask, finalMask)
         val contours = ArrayList<MatOfPoint>()
-        Imgproc.findContours(finalMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+
+        // HSV 필터링 대신 움직임(차분) 바이너리 마스크를 바로 활용하여 윤곽선 검출
+        Imgproc.findContours(binaryMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+
         var ballX = -1.0
         var maxArea = 0.0
+
         for (contour in contours) {
             val area = Geometry.contourArea(contour)
+            // 노이즈 제거를 위한 최소 면적 스레시홀드
             if (area > 120.0 && area > maxArea) {
                 maxArea = area
                 val m = Geometry.moments(contour)
-                if (m.m00 != 0.0) ballX = m.m10 / m.m00
+                if (m.m00 != 0.0) {
+                    ballX = m.m10 / m.m00
+                }
             }
         }
-        hsvRoi.release(); colorMask.release(); finalMask.release()
+
         contours.forEach { it.release() }
         return ballX
     }
