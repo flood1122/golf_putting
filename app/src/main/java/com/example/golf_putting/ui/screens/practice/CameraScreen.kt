@@ -1,10 +1,16 @@
 package com.example.golf_putting.ui.screens.practice
 
+import android.content.ContentValues
 import android.content.Context
-import android.graphics.Color as AndroidColor
+import android.graphics.Bitmap
+import android.graphics.Canvas as AndroidCanvas
+import android.graphics.Paint
 import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.os.Environment
+import android.provider.MediaStore
+import android.util.Log
 import android.view.Surface
 import android.view.TextureView
 import android.view.ViewGroup
@@ -35,9 +41,12 @@ import com.example.golf_putting.core.vision.CalibrationManager
 import com.example.golf_putting.core.vision.VideoAnalyzer
 import com.example.golf_putting.data.model.PuttingState
 import com.example.golf_putting.ui.navigation.Screen
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.OutputStream
+import kotlin.math.hypot
 import kotlin.math.max
 
 @Composable
@@ -49,18 +58,16 @@ fun CameraScreen(navController: NavController) {
 
     val activeCalib = CalibrationManager.activeCalibrationData
     var ballYRatio by remember { mutableFloatStateOf(activeCalib.ballYRatio) }
-    var gateAYRatio by remember { mutableFloatStateOf(activeCalib.gateAYRatio) }
-    var gateBYRatio by remember { mutableFloatStateOf(activeCalib.gateBYRatio) }
-    var realDistanceCm by remember { mutableFloatStateOf(activeCalib.realDistanceCm) }
 
     var puttingState by remember { mutableStateOf(PuttingState.SETUP) }
     var isRecording by remember { mutableStateOf(false) }
-    var currentBrightness by remember { mutableIntStateOf(0) }
-    var baselineBrightness by remember { mutableIntStateOf(0) }
+
+    var readyTimestampUs by remember { mutableLongStateOf(0L) }
 
     val toneGenerator = remember { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 100) }
     val textureViewRef = remember { mutableStateOf<TextureView?>(null) }
     val cameraController = remember { mutableStateOf<CameraController?>(null) }
+    var recordingStartSysTimeMs by remember { mutableLongStateOf(0L) }
 
     LaunchedEffect(puttingState) {
         if (puttingState != PuttingState.SETUP) {
@@ -71,83 +78,135 @@ fun CameraScreen(navController: NavController) {
     LaunchedEffect(highSpeedConfig) {
         if (highSpeedConfig == null) return@LaunchedEffect
         launch {
-            var stabilizingStartTime = 0L
+            var staticCheckCount = 0
+            var lastBallPt: Pair<Float, Float>? = null
+            val checkIntervalMs = 500L // ★ 스코프 오류 방지를 위해 변수를 루프 상단에 선언
+
             while (isActive) {
                 val tv = textureViewRef.value
                 val controller = cameraController.value
-                if (tv != null && tv.isAvailable && controller != null) {
-                    val bitmap = tv.getBitmap(108, 192)
-                    if (bitmap != null) {
-                        val x = (bitmap.width * 0.5f).toInt()
-                        val y = (bitmap.height * ballYRatio).toInt()
-                        var sum = 0
-                        var count = 0
-                        for (i in -2..2) {
-                            for (j in -2..2) {
-                                val px = x + i; val py = y + j
-                                if (px in 0 until bitmap.width && py in 0 until bitmap.height) {
-                                    val pixel = bitmap.getPixel(px, py)
-                                    sum += (AndroidColor.red(pixel) + AndroidColor.green(pixel) + AndroidColor.blue(pixel)) / 3
-                                    count++
-                                }
-                            }
-                        }
-                        val avgBrightness = if (count > 0) sum / count else 0
-                        currentBrightness = avgBrightness
-                        bitmap.recycle()
 
-                        if (puttingState == PuttingState.SETUP) {
-                            delay(200); continue
-                        }
+                if (tv != null && tv.isAvailable && controller != null) {
+                    if (puttingState == PuttingState.SETUP) {
+                        delay(200); continue
+                    }
+
+                    val bitmap = tv.getBitmap(360, 640)
+
+                    if (bitmap != null) {
+                        val ballX = bitmap.width * 0.5f
+                        val ballY = bitmap.height * ballYRatio
+                        val roiRadius = activeCalib.ballPixelRadius * (bitmap.width.toFloat() / 1280f) * 2.5f
+
+                        val currentBallPt = findBallCenterInBitmap(bitmap, ballX, ballY, roiRadius)
 
                         when (puttingState) {
                             PuttingState.WAITING -> {
-                                if (avgBrightness > baselineBrightness + 30) {
+                                if (currentBallPt != null) {
                                     puttingState = PuttingState.STABILIZING
-                                    stabilizingStartTime = System.currentTimeMillis()
+                                    staticCheckCount = 0
+                                    lastBallPt = currentBallPt
+                                    Log.i("GolfPutt", "[STABILIZING 진입] 공 감지됨, 500ms 정지 검출 시작")
                                 }
                             }
                             PuttingState.STABILIZING -> {
-                                if (avgBrightness > baselineBrightness + 30) {
-                                    if (System.currentTimeMillis() - stabilizingStartTime >= 2000) {
+                                if (currentBallPt != null && lastBallPt != null) {
+                                    val dist = hypot(
+                                        (currentBallPt.first - lastBallPt.first).toDouble(),
+                                        (currentBallPt.second - lastBallPt.second).toDouble()
+                                    ).toFloat()
+
+                                    val isStatic = dist < 4.0f
+
+                                    if (isStatic) {
+                                        staticCheckCount++
+                                        Log.d("GolfPutt", "[STABILIZING] 정지 체크 성공 ($staticCheckCount/4회) | 이동거리: ${String.format("%.2f", dist)}px")
+                                    } else {
+                                        staticCheckCount = 0
+                                        Log.w("GolfPutt", "[STABILIZING] 공 움직임 감지되어 카운트 초기화 | 이동거리: ${String.format("%.2f", dist)}px")
+                                    }
+
+                                    // 디버그용 주석처리
+//                                    saveStabilizingDebugImage(
+//                                        context,
+//                                        bitmap,
+//                                        ballX,
+//                                        ballY,
+//                                        roiRadius,
+//                                        currentBallPt,
+//                                        staticCheckCount,
+//                                        dist
+//                                    )
+
+                                    lastBallPt = currentBallPt
+
+
+
+                                    if (staticCheckCount >= 4) {
                                         puttingState = PuttingState.READY
+
+                                        // 녹화 시작 시점 기록
+                                        recordingStartSysTimeMs = System.currentTimeMillis()
+                                        readyTimestampUs = 0L // READY가 된 바로 그 시점부터 녹화 시작이므로 상대 PTS는 0us
+
                                         toneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP)
                                         controller.startRecording()
                                         isRecording = true
+                                        Log.i("GolfPutt", "[READY 완료] 녹화 시작!")
                                     }
                                 } else {
                                     puttingState = PuttingState.WAITING
+                                    staticCheckCount = 0
+                                    lastBallPt = null
                                 }
                             }
                             PuttingState.READY -> {
-                                if (avgBrightness < baselineBrightness + 15) {
-                                    puttingState = PuttingState.PUTTING
-                                    scope.launch {
-                                        delay(1500)
-                                        val savedPath = controller.getCurrentPath()
-                                        controller.stopRecording()
-                                        isRecording = false
-                                        puttingState = PuttingState.WAITING
-                                        savedPath?.let { path ->
-                                            VideoAnalyzer.analyzeVideo(path, CalibrationManager.activeCalibrationData)
+                                if (currentBallPt != null && lastBallPt != null) {
+                                    val moveY = lastBallPt.second - currentBallPt.second
+                                    if (moveY > 8.0f) {
+                                        puttingState = PuttingState.PUTTING
+                                        val targetReadyTsUs = readyTimestampUs
+                                        scope.launch {
+                                            delay(1500)
+                                            val savedPath = controller.getCurrentPath()
+                                            controller.stopRecording()
+                                            isRecording = false
+                                            puttingState = PuttingState.WAITING
+                                            delay(500)
+
+                                            savedPath?.let { path ->
+                                                scope.launch(Dispatchers.Default) {
+                                                    try {
+                                                        val pts = VideoAnalyzer.analyzeVideo(
+                                                            context = context,
+                                                            filePath = path,
+                                                            calib = CalibrationManager.activeCalibrationData,
+                                                            readyTimestampUs = targetReadyTsUs
+                                                        )
+                                                        Log.i("GolfPutt", "[SCREEN] 분석 완료! 포인트 개수: ${pts.size}")
+                                                    } catch (e: Exception) {
+                                                        Log.e("GolfPutt", "[SCREEN] 분석 실패", e)
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
+                                lastBallPt = currentBallPt
                             }
                             else -> {}
                         }
+                        bitmap.recycle()
                     }
                 }
-                delay(100)
+                delay(checkIntervalMs)
             }
         }
     }
 
     if (highSpeedConfig == null) {
         Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black),
+            modifier = Modifier.fillMaxSize().background(Color.Black),
             contentAlignment = Alignment.Center
         ) {
             Text("240fps 고속 촬영 미지원 기기", color = Color.White)
@@ -183,8 +242,6 @@ fun CameraScreen(navController: NavController) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val ballX = size.width * 0.5f
                 val ballY = size.height * ballYRatio
-                val gateAY = size.height * gateAYRatio
-                val gateBY = size.height * gateBYRatio
                 drawLine(color = Color.White.copy(alpha = 0.4f), start = Offset(ballX, 0f), end = Offset(ballX, size.height), strokeWidth = 3f)
                 val ballGuideColor = when(puttingState) {
                     PuttingState.SETUP -> Color.White.copy(alpha = 0.5f)
@@ -193,16 +250,10 @@ fun CameraScreen(navController: NavController) {
                     else -> Color.Yellow.copy(alpha = 0.5f)
                 }
                 drawCircle(color = ballGuideColor, radius = 40f, center = Offset(ballX, ballY))
-                val neonGreen = Color(0xFF39FF14)
-                drawLine(color = neonGreen.copy(alpha = 0.5f), start = Offset(0f, gateAY), end = Offset(size.width, gateAY), strokeWidth = 2f)
-                drawLine(color = neonGreen, start = Offset(0f, gateBY), end = Offset(size.width, gateBY), strokeWidth = 4f)
             }
 
-            // 상단 컨트롤 바
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 20.dp, top = 48.dp, end = 20.dp, bottom = 0.dp),
+                modifier = Modifier.fillMaxWidth().padding(start = 20.dp, top = 48.dp, end = 20.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -210,7 +261,7 @@ fun CameraScreen(navController: NavController) {
                     Text(
                         text = if (puttingState == PuttingState.SETUP) "1단계: 라인 정렬" else "상태: $puttingState",
                         color = Color.White,
-                        modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 8.dp),
+                        modifier = Modifier.padding(16.dp, 8.dp),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -226,54 +277,114 @@ fun CameraScreen(navController: NavController) {
 
             if (puttingState == PuttingState.SETUP) {
                 Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .padding(start = 0.dp, top = 0.dp, end = 0.dp, bottom = 30.dp),
+                    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = 30.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth(0.9f)
-                            .background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(16.dp))
-                            .padding(16.dp),
+                        modifier = Modifier.fillMaxWidth(0.9f).background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(16.dp)).padding(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text("가이드라인 조정", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        Text("가이드라인 및 그린 빠르기 조정", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                         Spacer(modifier = Modifier.height(12.dp))
+
+                        var greenSpeed by remember { mutableFloatStateOf(activeCalib.greenSpeedFactor) }
+
                         Column(modifier = Modifier.fillMaxWidth()) {
                             SliderRow("공 위치 Y", ballYRatio, 0.5f, 0.9f) { ballYRatio = it }
-                            SliderRow("Gate A", gateAYRatio, 0.3f, 0.7f) { gateAYRatio = it }
-                            SliderRow("Gate B", gateBYRatio, 0.05f, 0.4f) { gateBYRatio = it }
                             Spacer(modifier = Modifier.height(8.dp))
-                            Text("실제 매트 거리: ${"%.1f".format(realDistanceCm)} cm", color = Color.Yellow, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            Text("그린 빠르기(영점 조절): ${(greenSpeed * 100).toInt()}%", color = Color.Yellow, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             Slider(
-                                value = realDistanceCm,
-                                onValueChange = { realDistanceCm = it },
-                                valueRange = 10f..100f,
+                                value = greenSpeed,
+                                onValueChange = { greenSpeed = it },
+                                valueRange = 0.5f..1.5f,
                                 colors = SliderDefaults.colors(thumbColor = Color.Yellow, activeTrackColor = Color.Yellow)
                             )
                         }
                         Button(
                             onClick = {
                                 CalibrationManager.saveActiveCalibration(activeCalib.copy(
-                                    realDistanceCm = realDistanceCm,
                                     ballYRatio = ballYRatio,
-                                    gateAYRatio = gateAYRatio,
-                                    gateBYRatio = gateBYRatio
+                                    greenSpeedFactor = greenSpeed
                                 ))
-                                baselineBrightness = currentBrightness
                                 puttingState = PuttingState.WAITING
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color.Blue),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(start = 0.dp, top = 8.dp, end = 0.dp, bottom = 0.dp)
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
                         ) { Text("설정 완료 (시작하기)") }
                     }
                 }
             }
         }
+    }
+}
+
+private fun findBallCenterInBitmap(bitmap: Bitmap, centerX: Float, centerY: Float, roiRadius: Float): Pair<Float, Float>? {
+    val left = (centerX - roiRadius).toInt().coerceIn(0, bitmap.width - 1)
+    val top = (centerY - roiRadius).toInt().coerceIn(0, bitmap.height - 1)
+    val right = (centerX + roiRadius).toInt().coerceIn(left + 1, bitmap.width)
+    val bottom = (centerY + roiRadius).toInt().coerceIn(top + 1, bitmap.height)
+
+    var sumX = 0L; var sumY = 0L; var count = 0
+
+    for (y in top until bottom) {
+        for (x in left until right) {
+            val pixel = bitmap.getPixel(x, y)
+            val r = (pixel shr 16) and 0xFF
+            val g = (pixel shr 8) and 0xFF
+            val b = pixel and 0xFF
+            val brightness = (r + g + b) / 3
+
+            if (brightness > 160) {
+                sumX += x; sumY += y; count++
+            }
+        }
+    }
+
+    return if (count > 30) {
+        Pair(sumX.toFloat() / count, sumY.toFloat() / count)
+    } else null
+}
+
+private fun saveStabilizingDebugImage(
+    context: Context,
+    bitmap: Bitmap,
+    ballX: Float,
+    ballY: Float,
+    roiRadius: Float,
+    ballPt: Pair<Float, Float>,
+    count: Int,
+    dist: Float
+) {
+    try {
+        val mutableBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+        val canvas = AndroidCanvas(mutableBitmap)
+
+        val paintRoi = Paint().apply { color = android.graphics.Color.GREEN; strokeWidth = 3f; style = Paint.Style.STROKE }
+        val paintBall = Paint().apply { color = android.graphics.Color.RED; strokeWidth = 4f; style = Paint.Style.STROKE }
+        val paintCenter = Paint().apply { color = android.graphics.Color.YELLOW; style = Paint.Style.FILL }
+        val paintText = Paint().apply { color = android.graphics.Color.GREEN; textSize = 22f; isFakeBoldText = true }
+
+        canvas.drawRect(ballX - roiRadius, ballY - roiRadius, ballX + roiRadius, ballY + roiRadius, paintRoi)
+        canvas.drawCircle(ballPt.first, ballPt.second, roiRadius * 0.5f, paintBall)
+        canvas.drawCircle(ballPt.first, ballPt.second, 5f, paintCenter)
+
+        val text1 = "[STABILIZING 500ms] Pass: $count/4 | Delta: ${String.format("%.2f", dist)}px"
+        canvas.drawText(text1, 20f, 40f, paintText)
+
+        val fileName = "Stabilizing_Check_${System.currentTimeMillis()}"
+        val contentValues = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, "$fileName.jpg")
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/GolfPutt_Stabilizing")
+        }
+
+        val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+        if (uri != null) {
+            val outputStream: OutputStream? = context.contentResolver.openOutputStream(uri)
+            outputStream?.use { mutableBitmap.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+        }
+    } catch (e: Exception) {
+        Log.e("GolfPutt", "[Stabilizing 이미지 저장 에러]: ${e.message}")
     }
 }
 

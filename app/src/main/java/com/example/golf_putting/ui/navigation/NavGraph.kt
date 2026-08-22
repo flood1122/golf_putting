@@ -11,7 +11,6 @@ import com.example.golf_putting.ui.screens.leaderboard.LeaderboardScreen
 import com.example.golf_putting.ui.screens.practice.CameraScreen
 import com.example.golf_putting.ui.screens.practice.ChallengeScreen
 import com.example.golf_putting.ui.screens.settings.SettingsScreen
-import com.example.golf_putting.CameraScreen as RootCameraScreen
 
 @Composable
 fun AppNavGraph(navController: NavHostController) {
@@ -33,9 +32,9 @@ fun AppNavGraph(navController: NavHostController) {
             CameraScreen(navController = navController)
         }
 
-        // 메인 탭: 리포트 (테스트를 위해 루트의 CameraScreen으로 변경)
+                // 메인 탭: 리포트
         composable(Screen.TabScreen.Analytics.route) {
-            RootCameraScreen()
+            AnalyticsScreen()
         }
 
         // 메인 탭: 랭킹

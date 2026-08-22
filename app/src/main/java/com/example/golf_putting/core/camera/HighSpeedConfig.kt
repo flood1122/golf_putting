@@ -18,16 +18,27 @@ fun findHighSpeedConfiguration(cameraManager: CameraManager): HighSpeedConfig? {
         val lensFacing = chars.get(CameraCharacteristics.LENS_FACING)
         if (lensFacing != CameraCharacteristics.LENS_FACING_BACK) continue
 
-        val configs = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        val highSpeedSizes = configs?.getHighSpeedVideoSizes() ?: continue
+        val configs = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: continue
+        val highSpeedSizes = configs.getHighSpeedVideoSizes() ?: continue
 
         for (size in highSpeedSizes) {
             val fpsRanges = configs.getHighSpeedVideoFpsRangesFor(size)
-            for (range in fpsRanges) {
-                if (range.upper >= 240) {
-                    val sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
-                    return HighSpeedConfig(cameraId, size, range, sensorOrientation)
-                }
+            
+            // 1순위: [240, 240] 고정 FPS 범위 (하한선과 상한선이 모두 240)
+            val fixed240Range = fpsRanges.find { it.lower == 240 && it.upper == 240 }
+            if (fixed240Range != null) {
+                val sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+                return HighSpeedConfig(cameraId, size, fixed240Range, sensorOrientation)
+            }
+
+            // 2순위: 상한선이 240 이상인 범위 중 가장 높은 하한선을 가진 범위 선택
+            val maxLowerRange = fpsRanges
+                .filter { it.upper >= 240 }
+                .maxByOrNull { it.lower }
+
+            if (maxLowerRange != null) {
+                val sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+                return HighSpeedConfig(cameraId, size, maxLowerRange, sensorOrientation)
             }
         }
     }

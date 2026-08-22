@@ -8,7 +8,7 @@ import com.example.golf_putting.data.model.CalibrationData
 object CalibrationManager {
     private const val TAG = "GolfPutt/CalibrationManager"
     private const val PREFS_NAME = "golf_putting_calibration_prefs"
-    
+
     private const val KEY_ACTIVE_PRESET = "active_preset"
     private const val KEY_PRESETS_LIST = "presets_list"
 
@@ -57,14 +57,13 @@ object CalibrationManager {
 
     fun deletePreset(presetName: String) {
         prefs.edit().remove("preset_${presetName}_name")
-            .remove("preset_${presetName}_dist")
             .remove("preset_${presetName}_ballY")
-            .remove("preset_${presetName}_gateA")
-            .remove("preset_${presetName}_gateB")
             .remove("preset_${presetName}_hsvMin")
             .remove("preset_${presetName}_hsvMax")
             .remove("preset_${presetName}_radius")
+            .remove("preset_${presetName}_userRadius")
             .remove("preset_${presetName}_warp")
+            .remove("preset_${presetName}_greenSpeed")
             .apply()
 
         val currentPresets = getPresets().toMutableSet()
@@ -80,14 +79,13 @@ object CalibrationManager {
 
         prefs.edit()
             .putString("${prefix}_name", data.presetName)
-            .putFloat("${prefix}_dist", data.realDistanceCm)
             .putFloat("${prefix}_ballY", data.ballYRatio)
-            .putFloat("${prefix}_gateA", data.gateAYRatio)
-            .putFloat("${prefix}_gateB", data.gateBYRatio)
             .putString("${prefix}_hsvMin", hsvMinStr)
             .putString("${prefix}_hsvMax", hsvMaxStr)
             .putFloat("${prefix}_radius", data.ballPixelRadius)
+            .putFloat("${prefix}_userRadius", data.userSetRadius)
             .putString("${prefix}_warp", warpStr)
+            .putFloat("${prefix}_greenSpeed", data.greenSpeedFactor)
             .apply()
     }
 
@@ -95,11 +93,10 @@ object CalibrationManager {
         if (!prefs.contains("${prefix}_name")) return null
 
         val name = prefs.getString("${prefix}_name", "기본 매트") ?: "기본 매트"
-        val dist = prefs.getFloat("${prefix}_dist", 30f)
         val ballY = prefs.getFloat("${prefix}_ballY", 0.8f)
-        val gateA = prefs.getFloat("${prefix}_gateA", 0.5f)
-        val gateB = prefs.getFloat("${prefix}_gateB", 0.3f)
         val radius = prefs.getFloat("${prefix}_radius", 30f)
+        val userRadius = prefs.getFloat("${prefix}_userRadius", radius)
+        val speedFactor = prefs.getFloat("${prefix}_greenSpeed", 1.0f)
 
         val hsvMinStr = prefs.getString("${prefix}_hsvMin", "0,0,180") ?: "0,0,180"
         val hsvMaxStr = prefs.getString("${prefix}_hsvMax", "180,30,255") ?: "180,30,255"
@@ -111,14 +108,13 @@ object CalibrationManager {
 
         return CalibrationData(
             presetName = name,
-            realDistanceCm = dist,
             ballYRatio = ballY,
-            gateAYRatio = gateA,
-            gateBYRatio = gateB,
             ballHsvMin = if (hsvMin.size == 3) hsvMin else intArrayOf(0, 0, 180),
             ballHsvMax = if (hsvMax.size == 3) hsvMax else intArrayOf(180, 30, 255),
             ballPixelRadius = radius,
-            warpPoints = if (warp.size == 8) warp else floatArrayOf(0.1f, 0.1f, 0.9f, 0.1f, 0.1f, 0.9f, 0.9f, 0.9f)
+            userSetRadius = userRadius,
+            warpPoints = if (warp.size == 8) warp else floatArrayOf(0.1f, 0.1f, 0.9f, 0.1f, 0.1f, 0.9f, 0.9f, 0.9f),
+            greenSpeedFactor = speedFactor
         )
     }
 }

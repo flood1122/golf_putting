@@ -14,7 +14,6 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.golf_putting.core.vision.CalibrationManager
 import com.example.golf_putting.core.vision.VideoAnalyzer as CoreAnalyzer
-import com.example.golf_putting.VideoAnalyzer as RootAnalyzer
 import com.example.golf_putting.ui.components.MainBottomBar
 import com.example.golf_putting.ui.components.PermissionRequestScreen
 import com.example.golf_putting.ui.navigation.AppNavGraph
@@ -32,9 +31,7 @@ class MainActivity : ComponentActivity() {
             Log.e("GolfPutt", "[OPENCV] OpenCV 초기화 실패!")
         }
 
-        // [중요] 두 버전의 비디오 분석 모듈을 모두 초기화
-        CoreAnalyzer.init(applicationContext)
-        RootAnalyzer.init(applicationContext)
+        // [중요] 비디오 분석 모듈을 초기화
         CalibrationManager.init(applicationContext)
 
         setContent {
